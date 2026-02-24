@@ -43,12 +43,33 @@ function create(context) {
                 return init;
             }
 
-            // useCallback wrapper: const mySelector = useCallback((d) => ..., [])
+            // useCallback / useMemo wrapper
             const callArgs = _.get(init, 'arguments', []);
-            if (init.type === 'CallExpression' && init.callee.name === 'useCallback' && callArgs.length > 0) {
+            if (init.type === 'CallExpression' && callArgs.length > 0 && init.callee && init.callee.type === 'Identifier') {
+                const hookName = init.callee.name;
                 const inner = callArgs[0];
-                if (inner.type === 'ArrowFunctionExpression' || inner.type === 'FunctionExpression') {
+
+                // useCallback: const sel = useCallback((d) => ..., [])
+                if (hookName === 'useCallback' && (inner.type === 'ArrowFunctionExpression' || inner.type === 'FunctionExpression')) {
                     return inner;
+                }
+
+                // useMemo: const sel = useMemo(() => (d) => ..., [])
+                if (hookName === 'useMemo' && (inner.type === 'ArrowFunctionExpression' || inner.type === 'FunctionExpression')) {
+                    // Implicit arrow return: useMemo(() => (d) => ..., [])
+                    if (inner.body.type === 'ArrowFunctionExpression' || inner.body.type === 'FunctionExpression') {
+                        return inner.body;
+                    }
+
+                    // Block body: useMemo(() => { return (d) => ...; }, [])
+                    if (inner.body.type === 'BlockStatement') {
+                        for (const stmt of inner.body.body) {
+                            if (stmt.type === 'ReturnStatement' && stmt.argument
+                                && (stmt.argument.type === 'ArrowFunctionExpression' || stmt.argument.type === 'FunctionExpression')) {
+                                return stmt.argument;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -71,6 +92,29 @@ function create(context) {
     }
 
     /**
+     * Check if an expression could evaluate to a new Set.
+     * Handles direct NewExpression and ConditionalExpression (ternary).
+     *
+     * @param {Node} node - The expression node to check.
+     * @returns {boolean}
+     */
+    function expressionMayReturnSet(node) {
+        if (!node) {
+            return false;
+        }
+
+        if (isNewSetExpression(node)) {
+            return true;
+        }
+
+        if (node.type === 'ConditionalExpression') {
+            return isNewSetExpression(node.consequent) || isNewSetExpression(node.alternate);
+        }
+
+        return false;
+    }
+
+    /**
      * Check if a function body returns a new Set in return positions.
      *
      * @param {Node} body - The function body node.
@@ -81,8 +125,8 @@ function create(context) {
             return false;
         }
 
-        // Implicit arrow return: (d) => new Set(d)
-        if (isNewSetExpression(body)) {
+        // Implicit arrow return: (d) => new Set(d) or (d) => d ? new Set(d) : []
+        if (expressionMayReturnSet(body)) {
             return true;
         }
 
@@ -93,8 +137,8 @@ function create(context) {
                     continue;
                 }
 
-                // Direct: return new Set(d)
-                if (isNewSetExpression(stmt.argument)) {
+                // Direct or ternary: return new Set(d) / return d ? new Set(d) : []
+                if (expressionMayReturnSet(stmt.argument)) {
                     return true;
                 }
 

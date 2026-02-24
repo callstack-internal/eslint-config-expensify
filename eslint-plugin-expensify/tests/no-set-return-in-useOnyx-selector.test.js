@@ -64,6 +64,29 @@ ruleTester.run('no-set-return-in-useOnyx-selector', rule, {
         {
             code: 'const [data] = useOnyx(KEY, {selector: (d) => { return Object.keys(d); }, canBeMissing: true});',
         },
+
+        // Array.from wrapping a Set - return value is an Array, not a Set
+        {
+            code: 'const [data] = useOnyx(KEY, {selector: (d) => Array.from(new Set(d)), canBeMissing: true});',
+        },
+
+        // Spread Set into array literal - return value is an Array
+        {
+            code: 'const [data] = useOnyx(KEY, {selector: (d) => [...new Set(d)], canBeMissing: true});',
+        },
+
+        // Set used internally for dedup, but returns spread array
+        {
+            code: 'const [data] = useOnyx(KEY, {selector: (d) => { const s = new Set(d); return [...s]; }, canBeMissing: true});',
+        },
+
+        // Imported selector cannot be resolved - should not error
+        {
+            code: `
+                import {mySelector} from './selectors';
+                const [data] = useOnyx(KEY, {selector: mySelector, canBeMissing: true});
+            `,
+        },
     ],
     invalid: [
         // Inline arrow implicit return with new Set()
@@ -166,6 +189,54 @@ ruleTester.run('no-set-return-in-useOnyx-selector', rule, {
                 const selector = (d) => new Set(d);
                 const [data] = useOnyx(KEY, {selector, canBeMissing: true});
             `,
+            errors: [{
+                messageId: 'noSetReturn',
+            }],
+        },
+
+        // Ternary in implicit arrow return - both branches return Set
+        {
+            code: 'const [data] = useOnyx(KEY, {selector: (d) => d ? new Set(d) : new Set(), canBeMissing: true});',
+            errors: [{
+                messageId: 'noSetReturn',
+            }],
+        },
+
+        // Ternary in implicit arrow return - one branch returns Set
+        {
+            code: 'const [data] = useOnyx(KEY, {selector: (d) => d ? new Set(d) : [], canBeMissing: true});',
+            errors: [{
+                messageId: 'noSetReturn',
+            }],
+        },
+
+        // Return statement with ternary - Set in consequent
+        {
+            code: 'const [data] = useOnyx(KEY, {selector: (d) => { return d ? new Set(d) : []; }, canBeMissing: true});',
+            errors: [{
+                messageId: 'noSetReturn',
+            }],
+        },
+
+        // useMemo-wrapped selector returning Set (implicit factory return)
+        {
+            code: `function MyComponent() {
+                const sel = useMemo(() => (d) => new Set(d), []);
+                const [data] = useOnyx(KEY, {selector: sel, canBeMissing: true});
+                return null;
+            }`,
+            errors: [{
+                messageId: 'noSetReturn',
+            }],
+        },
+
+        // useMemo-wrapped selector returning Set (block factory body)
+        {
+            code: `function MyComponent() {
+                const sel = useMemo(() => { return (d) => new Set(d); }, []);
+                const [data] = useOnyx(KEY, {selector: sel, canBeMissing: true});
+                return null;
+            }`,
             errors: [{
                 messageId: 'noSetReturn',
             }],
