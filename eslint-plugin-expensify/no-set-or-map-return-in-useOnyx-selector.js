@@ -4,14 +4,14 @@ import {getVariableInit, getVariableAsObject, findProperty} from './utils/astUti
 const meta = {
     type: 'problem',
     docs: {
-        description: 'Disallow returning Set or ReadonlySet from useOnyx selectors.',
+        description: 'Disallow returning Set, ReadonlySet, Map, or ReadonlyMap from useOnyx selectors.',
         recommended: 'error',
     },
     schema: [],
     messages: {
-        noSetReturn: 'Avoid returning Sets from useOnyx selectors. '
-            + 'The deepEqual comparison used by useOnyx is extremely slow for Set objects. '
-            + 'Return an array instead and convert to Set outside the selector if needed.',
+        noSetOrMapReturn: 'Avoid returning Sets or Maps from useOnyx selectors. '
+            + 'The deepEqual comparison used by useOnyx is extremely slow for Set and Map objects. '
+            + 'Return an array or plain object instead and convert outside the selector if needed.',
     },
 };
 
@@ -78,55 +78,56 @@ function create(context) {
     }
 
     /**
-     * Check if a node is `new Set(...)` or `new ReadonlySet(...)`.
+     * Check if a node is `new Set(...)`, `new ReadonlySet(...)`, `new Map(...)`, or `new ReadonlyMap(...)`.
      *
      * @param {Node} node - The node to check.
      * @returns {boolean}
      */
-    function isNewSetExpression(node) {
+    function isNewSetOrMapExpression(node) {
         return node
             && node.type === 'NewExpression'
             && node.callee
             && node.callee.type === 'Identifier'
-            && (node.callee.name === 'Set' || node.callee.name === 'ReadonlySet');
+            && (node.callee.name === 'Set' || node.callee.name === 'ReadonlySet'
+                || node.callee.name === 'Map' || node.callee.name === 'ReadonlyMap');
     }
 
     /**
-     * Check if an expression could evaluate to a new Set.
+     * Check if an expression could evaluate to a new Set or Map.
      * Handles direct NewExpression and ConditionalExpression (ternary).
      *
      * @param {Node} node - The expression node to check.
      * @returns {boolean}
      */
-    function expressionMayReturnSet(node) {
+    function expressionMayReturnSetOrMap(node) {
         if (!node) {
             return false;
         }
 
-        if (isNewSetExpression(node)) {
+        if (isNewSetOrMapExpression(node)) {
             return true;
         }
 
         if (node.type === 'ConditionalExpression') {
-            return isNewSetExpression(node.consequent) || isNewSetExpression(node.alternate);
+            return isNewSetOrMapExpression(node.consequent) || isNewSetOrMapExpression(node.alternate);
         }
 
         return false;
     }
 
     /**
-     * Check if a function body returns a new Set in return positions.
+     * Check if a function body returns a new Set or Map in return positions.
      *
      * @param {Node} body - The function body node.
      * @returns {boolean}
      */
-    function bodyReturnsNewSet(body) {
+    function bodyReturnsNewSetOrMap(body) {
         if (!body) {
             return false;
         }
 
-        // Implicit arrow return: (d) => new Set(d) or (d) => d ? new Set(d) : []
-        if (expressionMayReturnSet(body)) {
+        // Implicit arrow return: (d) => new Set(d) / new Map(d) or ternary variants
+        if (expressionMayReturnSetOrMap(body)) {
             return true;
         }
 
@@ -137,15 +138,15 @@ function create(context) {
                     continue;
                 }
 
-                // Direct or ternary: return new Set(d) / return d ? new Set(d) : []
-                if (expressionMayReturnSet(stmt.argument)) {
+                // Direct or ternary: return new Set(d) / return new Map(d) / ternary variants
+                if (expressionMayReturnSetOrMap(stmt.argument)) {
                     return true;
                 }
 
                 // Variable tracing: const s = new Set(d); return s;
                 if (stmt.argument.type === 'Identifier') {
                     const init = getVariableInit(context, stmt.argument.name, stmt);
-                    if (isNewSetExpression(init)) {
+                    if (isNewSetOrMapExpression(init)) {
                         return true;
                     }
                 }
@@ -156,12 +157,12 @@ function create(context) {
     }
 
     /**
-     * Check if a function's return type annotation references Set or ReadonlySet.
+     * Check if a function's return type annotation references Set, ReadonlySet, Map, or ReadonlyMap.
      *
      * @param {Function} funcNode - The function node to check.
      * @returns {boolean}
      */
-    function hasSetReturnType(funcNode) {
+    function hasSetOrMapReturnType(funcNode) {
         const returnType = _.get(funcNode, 'returnType.typeAnnotation');
         if (!returnType) {
             return false;
@@ -169,27 +170,28 @@ function create(context) {
 
         if (returnType.type === 'TSTypeReference') {
             const typeName = _.get(returnType, 'typeName.name');
-            return typeName === 'Set' || typeName === 'ReadonlySet';
+            return typeName === 'Set' || typeName === 'ReadonlySet'
+                || typeName === 'Map' || typeName === 'ReadonlyMap';
         }
 
         return false;
     }
 
     /**
-     * Check a resolved selector function for Set returns and report if found.
+     * Check a resolved selector function for Set or Map returns and report if found.
      *
      * @param {Function|null} selectorFunc - The resolved selector function node.
      * @param {Node} reportNode - The node to report the error on.
      */
-    function checkSelectorForSet(selectorFunc, reportNode) {
+    function checkSelectorForSetOrMap(selectorFunc, reportNode) {
         if (!selectorFunc) {
             return;
         }
 
-        if (bodyReturnsNewSet(selectorFunc.body) || hasSetReturnType(selectorFunc)) {
+        if (bodyReturnsNewSetOrMap(selectorFunc.body) || hasSetOrMapReturnType(selectorFunc)) {
             context.report({
                 node: reportNode,
-                messageId: 'noSetReturn',
+                messageId: 'noSetOrMapReturn',
             });
         }
     }
@@ -214,7 +216,7 @@ function create(context) {
                     const selectorProperty = findProperty(optionsArgument, 'selector');
                     if (selectorProperty) {
                         const func = resolveSelectorFunction(selectorProperty.value, node);
-                        checkSelectorForSet(func, node.init);
+                        checkSelectorForSetOrMap(func, node.init);
                     }
                     break;
                 }
@@ -225,7 +227,7 @@ function create(context) {
                         const selectorProperty = findProperty(resolved, 'selector');
                         if (selectorProperty) {
                             const func = resolveSelectorFunction(selectorProperty.value, node);
-                            checkSelectorForSet(func, node.init);
+                            checkSelectorForSetOrMap(func, node.init);
                         }
                     }
                     break;
